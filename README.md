@@ -197,6 +197,13 @@ showed it.
    directory is itself inside a repo — a dotfiles repo covering `$HOME`, say —
    then paths under it count as in-repo.
 
+## Skill
+
+`skills/bouncer-prompts` is a Claude Code skill that works out why a permission
+prompt appeared and helps narrow or switch off the rule behind it. It is tracked
+here but runs from `~/.claude/skills`; see [skills/README.md](skills/README.md)
+for how to install it and check the two copies have not drifted.
+
 ## Development
 
 ```bash
