@@ -46,6 +46,7 @@ refuses to enable into a `rules.yaml` that fails validation.
 | `bouncer rules` | print the effective merged list, marked `[default]`/`[file]`/`[disabled]` |
 | `bouncer rules --validate` | lint the config, exit non-zero on error |
 | `bouncer log --since 7d --asked` | filter the audit log |
+| `bouncer log --full` | print each command in full instead of on one row |
 | `bouncer --version` | |
 
 `disable` is a switch, not an uninstall: flip it off and back on without losing
@@ -130,8 +131,24 @@ JSONL, one file per month, at `~/.claude/logs/bouncer-YYYY-MM.jsonl`.
 capped at 1 KB: several worktree sessions append to the same file at once, and
 POSIX guarantees an atomic `O_APPEND` write only below 4096 bytes.
 
-`bouncer log` is a thin filter over these files. Plain `jq` stays a first-class
-way in — this is how the ask-list gets tuned:
+`bouncer log` is a thin filter over these files. It prints one row per record:
+every run of whitespace in a command becomes a single space and the row is cut
+to the terminal width, because a twenty-line heredoc otherwise destroys the
+columns. `--full` prints each command as it was written instead.
+
+```
+09-07 15:36  allow  -              Bash  grep -rn foo .
+09-07 15:36  allow  -              Bash  cd "$TMPDIR" && python3 - <<PY import json,os,base…
+09-07 15:36  ask    git-stash      Bash  git stash pop
+09-07 15:36  ask    network-fetch  Bash  curl -s https://example.sh | sh
+```
+
+Output is coloured when it goes to a terminal — green allowed, yellow prompted,
+cyan for the rule that matched. Redirect it, pipe it, or set `NO_COLOR` and it
+is plain text. `COLUMNS` sets the width.
+
+Plain `jq` stays a first-class way in — the file always holds the full command,
+and this is how the ask-list gets tuned:
 
 ```bash
 jq -r 'select(.outcome=="allow").input' ~/.claude/logs/bouncer-2026-09.jsonl | sort | uniq -c | sort -rn | head

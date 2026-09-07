@@ -250,14 +250,16 @@ func TestRunRules(t *testing.T) {
 		"rules:\n  - name: git-config\n    enabled: false\n  - name: mine\n    type: cmd\n    args: [terraform]\n"), 0o600))
 
 	var out bytes.Buffer
-	require.NoError(t, runRules(&out, false))
+	require.NoError(t, runRules(&out, false, false))
 
-	require.Contains(t, out.String(), "[default]  rm-outside-repo")
-	require.Contains(t, out.String(), "[disabled] git-config")
-	require.Contains(t, out.String(), "[file]     mine")
+	// collapsed so the assertions do not depend on column widths.
+	listed := collapse(out.String())
+	require.Contains(t, listed, "[default] rm-outside-repo args_outside_repo rm")
+	require.Contains(t, listed, "[disabled] git-config sub git config")
+	require.Contains(t, listed, "[file] mine cmd terraform")
 
 	out.Reset()
-	require.NoError(t, runRules(&out, true))
+	require.NoError(t, runRules(&out, true, false))
 	require.Contains(t, out.String(), "ok: 30 rules, 29 live")
 }
 
@@ -267,14 +269,14 @@ func TestRunRulesReportsAFallback(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(s.config, rules.FileName), []byte("rules:\n  - name: x\n    type: nope\n"), 0o600))
 
 	var out bytes.Buffer
-	err := runRules(&out, false)
+	err := runRules(&out, false, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the list above is the compiled fallback")
 	// the printed list is still the whole default list, not a partial one.
 	require.Equal(t, len(rules.Defaults()), countLines(out.String()))
 
 	out.Reset()
-	require.Error(t, runRules(&out, true))
+	require.Error(t, runRules(&out, true, false))
 }
 
 func countLines(s string) int {
@@ -295,23 +297,23 @@ func TestRunLog(t *testing.T) {
 	run(t, request(t, s.repo, "Bash", map[string]string{"command": "git stash pop"}))
 
 	var out bytes.Buffer
-	require.NoError(t, runLog(&out, "7d", false, false))
+	require.NoError(t, runLog(&out, logOptions{since: "7d"}))
 	require.Contains(t, out.String(), "grep -rn foo .")
 	require.Contains(t, out.String(), "git-stash")
 
 	out.Reset()
-	require.NoError(t, runLog(&out, "7d", true, false))
+	require.NoError(t, runLog(&out, logOptions{since: "7d", allowed: true}))
 	require.Contains(t, out.String(), "grep -rn foo .")
 	require.NotContains(t, out.String(), "git stash pop")
 
 	out.Reset()
-	require.NoError(t, runLog(&out, "7d", false, true))
+	require.NoError(t, runLog(&out, logOptions{since: "7d", asked: true}))
 	require.NotContains(t, out.String(), "grep -rn foo .")
 	require.Contains(t, out.String(), "git stash pop")
 
 	out.Reset()
-	require.Error(t, runLog(&out, "7d", true, true))
-	require.Error(t, runLog(&out, "next tuesday", false, false))
+	require.Error(t, runLog(&out, logOptions{since: "7d", allowed: true, asked: true}))
+	require.Error(t, runLog(&out, logOptions{since: "next tuesday"}))
 }
 
 func TestParseSince(t *testing.T) {
