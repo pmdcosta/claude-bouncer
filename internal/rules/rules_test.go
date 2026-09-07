@@ -241,3 +241,60 @@ func TestDefaultsAreValid(t *testing.T) {
 		names[r.Name] = true
 	}
 }
+
+// TestMatchDetailReportsTheCommand backs `bouncer explain` pointing at the one
+// command that matched out of many.
+func TestMatchDetailReportsTheCommand(t *testing.T) {
+	e := newEnv(t, "ins-1")
+
+	walk := func(command string) []shellwalk.Command {
+		t.Helper()
+
+		cmds, err := shellwalk.Walk(command, e.repo)
+		require.NoError(t, err)
+
+		return cmds
+	}
+
+	t.Run("the third of four commands", func(t *testing.T) {
+		name, at := rules.MatchDetail(rules.Defaults(), rules.Request{
+			ToolName: "Bash",
+			Commands: walk("go build ./... && echo done && git stash pop && echo bye"),
+		})
+		require.Equal(t, "git-stash", name)
+		require.Equal(t, 2, at)
+	})
+
+	t.Run("a path glob on a later argument", func(t *testing.T) {
+		name, at := rules.MatchDetail(rules.Defaults(), rules.Request{
+			ToolName: "Bash",
+			Commands: walk("echo start && cat " + e.home + "/.ssh/config"),
+		})
+		require.Equal(t, "config-paths", name)
+		require.Equal(t, 1, at)
+	})
+
+	t.Run("a tool regex matches no command", func(t *testing.T) {
+		name, at := rules.MatchDetail(rules.Defaults(), rules.Request{ToolName: "mcp__x__delete_y"})
+		require.Equal(t, "mcp-destructive", name)
+		require.Equal(t, rules.NoCommand, at)
+	})
+
+	t.Run("a file path matches no command", func(t *testing.T) {
+		name, at := rules.MatchDetail(rules.Defaults(), rules.Request{
+			ToolName: "Write",
+			FilePath: e.home + "/.claude/settings.json",
+		})
+		require.Equal(t, "config-paths", name)
+		require.Equal(t, rules.NoCommand, at)
+	})
+
+	t.Run("nothing matched", func(t *testing.T) {
+		name, at := rules.MatchDetail(rules.Defaults(), rules.Request{
+			ToolName: "Bash",
+			Commands: walk("go build ./..."),
+		})
+		require.Empty(t, name)
+		require.Equal(t, rules.NoCommand, at)
+	})
+}
