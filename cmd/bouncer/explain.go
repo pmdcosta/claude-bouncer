@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pmdcosta/claude-bouncer/internal/hook"
@@ -118,14 +119,14 @@ func runExplain(out io.Writer, opts explainOptions) error {
 		return nil
 	}
 
-	name := rules.Match(loaded, rules.Request{
+	name, at := rules.MatchDetail(loaded, rules.Request{
 		ToolName: opts.tool,
 		FilePath: opts.file,
 		Commands: cmds,
 	})
 
 	printVerdict(out, p, loaded, name)
-	printWalk(out, p, cmds, opts, cwd)
+	printWalk(out, p, cmds, opts, cwd, at)
 
 	if loadErr != nil {
 		fmt.Fprintf(out, "\n%s %s\n", p.paint(p.red, "rules file problem, using compiled defaults:"), loadErr)
@@ -155,8 +156,12 @@ func printVerdict(out io.Writer, p palette, loaded []rules.Rule, name string) {
 	}
 }
 
-// printWalk prints each simple command with the state a rule judged it in.
-func printWalk(out io.Writer, p palette, cmds []shellwalk.Command, opts explainOptions, cwd string) {
+// printWalk prints each simple command with the state a rule judged it in,
+// marking the one that matched.
+//
+// A command string can hold a dozen simple commands, so pointing at the one
+// that matched is the difference between an answer and a haystack.
+func printWalk(out io.Writer, p palette, cmds []shellwalk.Command, opts explainOptions, cwd string, at int) {
 	if opts.file != "" {
 		fmt.Fprintf(out, "\n%s %s %s\n", p.paint(p.dim, "file:"), opts.file, p.paint(p.dim, "tool "+opts.tool))
 	}
@@ -165,23 +170,56 @@ func printWalk(out io.Writer, p palette, cmds []shellwalk.Command, opts explainO
 		return
 	}
 
-	fmt.Fprintf(out, "\n%s\n", p.paint(p.dim, "commands found, in execution order:"))
+	heading := "commands found, in execution order:"
+	if at >= 0 && at < len(cmds) {
+		heading = "commands found, in execution order (-> is the one that matched):"
+	}
+
+	fmt.Fprintf(out, "\n%s\n", p.paint(p.dim, heading))
+
+	// the number column has to fit the largest index, or double digits shove
+	// every line along by one.
+	digits := len(strconv.Itoa(len(cmds)))
+
+	previous := ""
 
 	for i, c := range cmds {
-		words := []string{c.Name}
-		for _, a := range c.Args {
-			if !a.Expanded {
-				words = append(words, "<unexpanded>")
-
-				continue
-			}
-
-			words = append(words, a.Value)
+		marker, colour := strings.Repeat(" ", 2), ""
+		if i == at {
+			marker, colour = "->", p.yellow
 		}
 
-		fmt.Fprintf(out, "  %d. %s\n", i+1, strings.Join(words, " "))
-		fmt.Fprintf(out, "     %s\n", p.paint(p.dim, describeState(c, cwd)))
+		fmt.Fprintf(out, "%s %*d. %s\n", p.paint(colour, marker), digits, i+1,
+			p.paint(colour, words(c)))
+
+		// the state is only worth a line when it changed, or when this is the
+		// command that matched. Repeating an identical cwd for every command in
+		// a long pipeline buries the one line that matters.
+		state := describeState(c, cwd)
+		if state != previous || i == at {
+			fmt.Fprintf(out, "%s%s\n", strings.Repeat(" ", digits+5), p.paint(p.dim, state))
+		}
+
+		previous = state
 	}
+}
+
+// words renders a command the way it would be typed, marking any word that
+// could not be resolved without running the shell.
+func words(c shellwalk.Command) string {
+	out := []string{c.Name}
+
+	for _, a := range c.Args {
+		if !a.Expanded {
+			out = append(out, "<unexpanded>")
+
+			continue
+		}
+
+		out = append(out, a.Value)
+	}
+
+	return strings.Join(out, " ")
 }
 
 // describeState renders the working directory, repository boundary and branch

@@ -20,25 +20,41 @@ type Request struct {
 	Commands []shellwalk.Command
 }
 
+// NoCommand is the command index reported when a rule matched something other
+// than a single command, such as a tool name or a file path.
+const NoCommand = -1
+
 // Match returns the name of the first live rule requiring a prompt, or an
 // empty string when nothing matches and the request can be auto-approved.
 func Match(rs []Rule, req Request) string {
+	name, _ := MatchDetail(rs, req)
+
+	return name
+}
+
+// MatchDetail also reports which command in the request the rule matched, as
+// an index into req.Commands, or NoCommand.
+//
+// Knowing the command matters when explaining a decision: a command string can
+// hold a dozen simple commands, and pointing at the one that matched is the
+// difference between an answer and a haystack.
+func MatchDetail(rs []Rule, req Request) (string, int) {
 	for _, r := range rs {
 		if !r.On() {
 			continue
 		}
 
-		if matches(r, req) {
-			return r.Name
+		if at, found := matches(r, req); found {
+			return r.Name, at
 		}
 	}
 
-	return ""
+	return "", NoCommand
 }
 
-func matches(r Rule, req Request) bool {
+func matches(r Rule, req Request) (int, bool) {
 	if r.Type == TypeToolRegex {
-		return matchToolRegex(r.Args, req.ToolName)
+		return NoCommand, matchToolRegex(r.Args, req.ToolName)
 	}
 
 	if r.Type == TypePathGlob {
@@ -46,13 +62,13 @@ func matches(r Rule, req Request) bool {
 	}
 
 	// every remaining type inspects the commands of a Bash call.
-	for _, cmd := range req.Commands {
+	for i, cmd := range req.Commands {
 		if matchCommand(r, cmd) {
-			return true
+			return i, true
 		}
 	}
 
-	return false
+	return NoCommand, false
 }
 
 func matchCommand(r Rule, cmd shellwalk.Command) bool {
@@ -112,24 +128,24 @@ func matchToolRegex(patterns []string, tool string) bool {
 
 // matchPathGlob checks a file tool's target and every path-shaped word of
 // every command in a Bash call, including redirection targets.
-func matchPathGlob(patterns []string, req Request) bool {
+func matchPathGlob(patterns []string, req Request) (int, bool) {
 	if req.FilePath != "" && matchAnyGlob(patterns, req.FilePath, "") {
-		return true
+		return NoCommand, true
 	}
 
-	for _, cmd := range req.Commands {
+	for i, cmd := range req.Commands {
 		for _, a := range append(append([]shellwalk.Arg{}, cmd.Args...), cmd.Redirs...) {
 			if !a.Expanded || a.IsFlag {
 				continue
 			}
 
 			if matchAnyGlob(patterns, a.Value, cmd.Cwd) {
-				return true
+				return i, true
 			}
 		}
 	}
 
-	return false
+	return NoCommand, false
 }
 
 // matchAnyGlob tries every pattern against the path as written and, when it is
