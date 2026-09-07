@@ -178,3 +178,68 @@ func TestExplainColorIsOptOut(t *testing.T) {
 	require.NotContains(t, plain, "\x1b[")
 	require.Equal(t, plain, stripANSI(painted))
 }
+
+// TestExplainMarksTheMatchingCommand is what makes the walk an answer rather
+// than a haystack: a long command line holds many simple commands.
+func TestExplainMarksTheMatchingCommand(t *testing.T) {
+	s := newSandbox(t, "topic-1")
+
+	got := explain(t, explainOptions{
+		command: "go build ./... && echo done && bash ./run.sh && echo bye",
+		tool:    "Bash",
+		cwd:     s.repo,
+	})
+
+	require.Contains(t, got, "-> is the one that matched")
+	require.Contains(t, got, "-> 3. bash ./run.sh")
+	// the commands either side are listed but not marked.
+	require.Contains(t, got, "   2. echo done")
+	require.Contains(t, got, "   4. echo bye")
+}
+
+func TestExplainMarksNothingWhenNothingMatched(t *testing.T) {
+	s := newSandbox(t, "topic-1")
+
+	got := explain(t, explainOptions{command: "go build ./... && echo done", tool: "Bash", cwd: s.repo})
+	require.Contains(t, got, "allow")
+	require.NotContains(t, got, "->")
+	require.NotContains(t, got, "the one that matched")
+}
+
+// TestExplainMarksThePathThatMatched covers a path_glob hit on an argument
+// several commands into the line.
+func TestExplainMarksThePathThatMatched(t *testing.T) {
+	s := newSandbox(t, "topic-1")
+
+	got := explain(t, explainOptions{
+		command: "echo start && cat " + s.home + "/.ssh/config",
+		tool:    "Bash",
+		cwd:     s.repo,
+	})
+
+	require.Contains(t, got, "config-paths")
+	require.Contains(t, got, "-> 2. cat "+s.home+"/.ssh/config")
+}
+
+// TestExplainRepeatsStateOnlyWhenItChanges keeps the one line that matters
+// from being buried under an identical cwd for every command in a pipeline.
+func TestExplainRepeatsStateOnlyWhenItChanges(t *testing.T) {
+	s := newSandbox(t, "topic-1")
+
+	got := explain(t, explainOptions{
+		command: "echo a && echo b && echo c && echo d",
+		tool:    "Bash",
+		cwd:     s.repo,
+	})
+
+	require.Equal(t, 1, strings.Count(got, "cwd "+s.repo), "the unchanged state is stated once")
+
+	// a cd changes the state, so it is restated there, and again on the match.
+	got = explain(t, explainOptions{
+		command: "echo a && cd " + s.home + " && rm -f x",
+		tool:    "Bash",
+		cwd:     s.repo,
+	})
+	require.Contains(t, got, "moved by an earlier cd")
+	require.Contains(t, got, "-> 3. rm -f x")
+}
