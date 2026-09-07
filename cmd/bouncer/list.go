@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ func rulesCommand() *cli.Command {
 			},
 		},
 		Action: func(_ context.Context, cmd *cli.Command) error {
-			return runRules(cmd.Root().Writer, cmd.Bool("validate"))
+			return runRules(cmd.Root().Writer, cmd.Bool("validate"), colorEnabled(os.Stdout))
 		},
 	}
 }
@@ -32,7 +33,7 @@ func rulesCommand() *cli.Command {
 //
 // A load error still prints a list, because the compiled defaults are still
 // the live list in that case. The error goes alongside it.
-func runRules(out io.Writer, validate bool) error {
+func runRules(out io.Writer, validate, color bool) error {
 	dir, err := rules.ConfigDir()
 	if err != nil {
 		return fmt.Errorf("failed to list rules: %w", err)
@@ -50,18 +51,29 @@ func runRules(out io.Writer, validate bool) error {
 		return nil
 	}
 
-	width := 0
+	p := newPalette(color)
+
+	names, types := 0, 0
 	for _, r := range loaded {
-		width = max(width, len(r.Name))
+		names = max(names, len(r.Name))
+		types = max(types, len(string(r.Type)))
 	}
 
 	for _, r := range loaded {
-		marker := "[" + string(r.Source) + "]"
-		if !r.On() {
-			marker = "[disabled]"
+		marker, colour := "["+string(r.Source)+"]", p.dim
+		if r.Source == rules.SourceFile {
+			colour = p.cyan
 		}
 
-		fmt.Fprintf(out, "%-10s %-*s  %-20s %s\n", marker, width, r.Name, r.Type, strings.Join(r.Args, " "))
+		if !r.On() {
+			marker, colour = "[disabled]", p.yellow
+		}
+
+		fmt.Fprintf(out, "%s  %s  %s  %s\n",
+			p.pad(colour, marker, 10),
+			p.pad("", r.Name, names),
+			p.pad(p.dim, string(r.Type), types),
+			p.paint(p.dim, strings.Join(r.Args, " ")))
 	}
 
 	if loadErr != nil {
@@ -89,24 +101,46 @@ func logCommand() *cli.Command {
 				Name:  "asked",
 				Usage: "only records that showed a prompt",
 			},
+			&cli.BoolFlag{
+				Name:  "full",
+				Usage: "print each command in full, on its own indented lines",
+			},
 		},
 		Action: func(_ context.Context, cmd *cli.Command) error {
-			return runLog(cmd.Root().Writer, cmd.String("since"), cmd.Bool("allowed"), cmd.Bool("asked"))
+			return runLog(cmd.Root().Writer, logOptions{
+				since:   cmd.String("since"),
+				allowed: cmd.Bool("allowed"),
+				asked:   cmd.Bool("asked"),
+				full:    cmd.Bool("full"),
+				color:   colorEnabled(os.Stdout),
+				width:   terminalWidth(),
+			})
 		},
 	}
 }
 
+// logOptions is what bouncer log was asked for.
+type logOptions struct {
+	since   string
+	allowed bool
+	asked   bool
+	full    bool
+	color   bool
+	// width is where a collapsed line is cut. Zero means never cut.
+	width int
+}
+
 // runLog prints matching audit records. jq over the monthly files stays a
 // first-class way in; this is a convenience over the same data.
-func runLog(out io.Writer, since string, allowed, asked bool) error {
-	if allowed && asked {
+func runLog(out io.Writer, opts logOptions) error {
+	if opts.allowed && opts.asked {
 		return fmt.Errorf("failed to filter the log: --allowed and --asked are mutually exclusive")
 	}
 
 	query := audit.Query{}
 
-	if since != "" {
-		d, err := parseSince(since)
+	if opts.since != "" {
+		d, err := parseSince(opts.since)
 		if err != nil {
 			return fmt.Errorf("failed to read the log: %w", err)
 		}
@@ -114,11 +148,11 @@ func runLog(out io.Writer, since string, allowed, asked bool) error {
 		query.Since = time.Now().Add(-d)
 	}
 
-	if allowed {
+	if opts.allowed {
 		query.Outcome = "allow"
 	}
 
-	if asked {
+	if opts.asked {
 		query.Outcome = "ask"
 	}
 
@@ -132,17 +166,157 @@ func runLog(out io.Writer, since string, allowed, asked bool) error {
 		return fmt.Errorf("failed to read the log: %w", err)
 	}
 
-	for _, r := range records {
-		rule := r.Rule
-		if rule == "" {
-			rule = "-"
-		}
+	if opts.full {
+		printFull(out, records, opts)
 
-		fmt.Fprintf(out, "%s  %-5s  %-24s %-14s %s\n",
-			r.Time.Format(time.RFC3339), r.Outcome, rule, r.Tool, r.Input)
+		return nil
 	}
 
+	printCollapsed(out, records, opts)
+
 	return nil
+}
+
+// timeLayout is short on purpose: a full RFC 3339 stamp spends twenty columns
+// on text that barely changes between rows.
+const timeLayout = "01-02 15:04"
+
+// columns are the widths of the metadata columns, measured across the records
+// being printed so nothing is cut and nothing is over-padded.
+type columns struct {
+	rule int
+	tool int
+}
+
+func measure(records []audit.Record) columns {
+	c := columns{}
+
+	for _, r := range records {
+		c.rule = max(c.rule, len(ruleOf(r)))
+		c.tool = max(c.tool, len(r.Tool))
+	}
+
+	return c
+}
+
+// ruleOf names the rule that matched, or a dash for a default allow.
+func ruleOf(r audit.Record) string {
+	if r.Rule == "" {
+		return "-"
+	}
+
+	return r.Rule
+}
+
+// printCollapsed prints one row per record.
+//
+// A shell command can be twenty lines of heredoc, which destroys the columns
+// and makes the log unreadable, so every run of whitespace becomes a single
+// space and the row is cut to the terminal width. The full text is always in
+// the JSONL file, and behind --full.
+func printCollapsed(out io.Writer, records []audit.Record, opts logOptions) {
+	p := newPalette(opts.color)
+	c := measure(records)
+
+	for _, r := range records {
+		prefix := fmt.Sprintf("%s  %s  %s  %s  ",
+			p.paint(p.dim, r.Time.Local().Format(timeLayout)),
+			p.pad(outcomeColour(p, r), r.Outcome, 5),
+			p.pad(ruleColour(p, r), ruleOf(r), c.rule),
+			p.pad(p.dim, r.Tool, c.tool))
+
+		fmt.Fprintln(out, prefix+clip(collapse(r.Input), commandWidth(opts.width, c)))
+	}
+}
+
+// minCommandWidth keeps the command column usable on a narrow terminal, even
+// if that means the row wraps.
+const minCommandWidth = 24
+
+// commandWidth is how many columns are left for the command. Zero means the
+// command is never cut.
+func commandWidth(width int, c columns) int {
+	if width == 0 {
+		return 0
+	}
+
+	return max(width-visibleWidth(c), minCommandWidth)
+}
+
+// printFull prints the metadata and then the command as it was written.
+func printFull(out io.Writer, records []audit.Record, opts logOptions) {
+	p := newPalette(opts.color)
+
+	for i, r := range records {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+
+		fmt.Fprintf(out, "%s  %s  %s  %s\n",
+			p.paint(p.dim, r.Time.Local().Format(timeLayout)),
+			p.pad(outcomeColour(p, r), r.Outcome, 5),
+			p.paint(ruleColour(p, r), ruleOf(r)),
+			p.paint(p.dim, r.Tool))
+
+		for _, line := range strings.Split(strings.TrimRight(r.Input, "\n"), "\n") {
+			fmt.Fprintln(out, "    "+line)
+		}
+
+		if r.Error != "" {
+			fmt.Fprintln(out, "    "+p.paint(p.red, r.Error))
+		}
+	}
+}
+
+// outcomeColour picks the colour for an outcome: green went through silently,
+// yellow showed a prompt.
+func outcomeColour(p palette, r audit.Record) string {
+	if r.Outcome == "allow" {
+		return p.green
+	}
+
+	return p.yellow
+}
+
+// ruleColour dims the dash of a default allow so the named rules stand out.
+func ruleColour(p palette, r audit.Record) string {
+	if r.Rule == "" {
+		return p.dim
+	}
+
+	return p.cyan
+}
+
+// gap is the spacing between metadata columns.
+const gap = 2
+
+// visibleWidth is how many columns the metadata takes, gaps included.
+func visibleWidth(c columns) int {
+	return len(timeLayout) + gap + len("allow") + gap + c.rule + gap + c.tool + gap
+}
+
+// collapse turns every run of whitespace into a single space, so a multi-line
+// command still occupies exactly one row.
+func collapse(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// clip cuts s to at most n columns, marking the cut.
+func clip(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+
+	if n == 1 {
+		return "…"
+	}
+
+	return string(runes[:n-1]) + "…"
 }
 
 // parseSince accepts a Go duration plus a day suffix, so --since 7d works.
