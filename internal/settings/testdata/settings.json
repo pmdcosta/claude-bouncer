@@ -1,0 +1,30 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "rtk statusline"
+  },
+  "env": {
+    "DOCKER_HOST": "unix:///var/run/docker.sock",
+    "TESTCONTAINERS_RYUK_DISABLED": "true"
+  },
+  "enabledPlugins": [
+    "anthropic-skills"
+  ],
+  "sandbox": {
+    "enabled": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk hook"
+          }
+        ]
+      }
+    ]
+  },
+  "includeCoAuthoredBy": false
+}
