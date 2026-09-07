@@ -40,6 +40,7 @@ refuses to enable into a `rules.yaml` that fails validation.
 | | |
 |---|---|
 | `bouncer decide` | the hook; reads JSON on stdin, writes a decision to stdout |
+| `bouncer explain '<command>'` | say what bouncer would decide, and why, without logging it |
 | `bouncer enable` | seed the rules file if absent, register the hook |
 | `bouncer disable` | remove the hook entry; leaves `rules.yaml` alone |
 | `bouncer disable --purge` | also delete the rules file |
@@ -51,6 +52,31 @@ refuses to enable into a `rules.yaml` that fails validation.
 
 `disable` is a switch, not an uninstall: flip it off and back on without losing
 any tuning.
+
+## Working out why something prompted
+
+```
+$ bouncer explain "cd ~/.claude/projects/x/memory && rm -f MEMORY.md"
+ask  rm-outside-repo
+  rule: args_outside_repo [rm]  from default
+
+commands found, in execution order:
+  1. cd /Users/p/.claude/projects/x/memory
+     cwd /Users/p/Workspace/example-repo, repo /Users/p/Workspace/example-repo, branch master
+  2. rm -f MEMORY.md
+     cwd /Users/p/.claude/projects/x/memory (moved by an earlier cd), no git repo above it, so rm has no boundary to be inside of
+```
+
+`explain` answers the same question the hook does but writes no audit record,
+so diagnosing a prompt never pollutes the log you are reading. The walk is
+usually where the answer is: a rule judges one simple command at one effective
+working directory, and neither is visible in the text you typed.
+
+Pass `-` to read the command from stdin, which avoids quoting a heredoc:
+
+```bash
+bouncer explain --cwd /path/to/repo - < command.txt
+```
 
 ## The walk
 
@@ -170,6 +196,13 @@ showed it.
 5. **`rm` is judged against the nearest enclosing git repository.** If a
    directory is itself inside a repo — a dotfiles repo covering `$HOME`, say —
    then paths under it count as in-repo.
+
+## Skill
+
+`skills/bouncer-prompts` is a Claude Code skill that works out why a permission
+prompt appeared and helps narrow or switch off the rule behind it. It is tracked
+here but runs from `~/.claude/skills`; see [skills/README.md](skills/README.md)
+for how to install it and check the two copies have not drifted.
 
 ## Development
 

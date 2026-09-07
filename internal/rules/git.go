@@ -40,28 +40,49 @@ func repoRoot(dir string) (string, bool) {
 // repository or an unreadable HEAD all count as protected, because there is
 // then no evidence that the branch is safe.
 func onProtectedBranch(dir string) bool {
+	branch, known := HeadBranch(dir)
+	if !known {
+		return true
+	}
+
+	return protectedBranches[branch]
+}
+
+// RepoRoot returns the root of the git repository containing dir, and whether
+// one was found. It is exported so `bouncer explain` can show the boundary the
+// rm rule judged a path against.
+func RepoRoot(dir string) (string, bool) {
+	return repoRoot(dir)
+}
+
+// HeadBranch returns the branch HEAD points at in the repository containing
+// dir.
+//
+// The second return value is false when there is no evidence of a branch at
+// all: no repository, or an unreadable HEAD. A detached HEAD reports an empty
+// branch name and true, because that is known not to be a protected branch.
+func HeadBranch(dir string) (string, bool) {
 	root, found := repoRoot(dir)
 	if !found {
-		return true
+		return "", false
 	}
 
 	gitDir, err := resolveGitDir(root)
 	if err != nil {
-		return true
+		return "", false
 	}
 
 	head, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
 	if err != nil {
-		return true
+		return "", false
 	}
 
 	ref, isRef := strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
 	if !isRef {
-		// a detached HEAD is not a branch, so it is not a protected one.
-		return false
+		return "", true
 	}
 
-	return protectedBranches[ref]
+	return ref, true
 }
 
 // resolveGitDir returns the real git directory for a repository root,
